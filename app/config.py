@@ -24,8 +24,8 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
 
     # Default LLM configurations
-    DEFAULT_PROVIDER: Literal["groq", "ollama", "openai", "gemini", "anthropic"] = "groq"
-    DEFAULT_MODEL: str = "openai/gpt-oss-120b"
+    DEFAULT_PROVIDER: Literal["groq", "ollama", "openai", "gemini", "anthropic", "openrouter"] = "groq"
+    DEFAULT_MODEL: str = "llama-3.3-70b-versatile"
     TEMPERATURE: float = 0.7
 
     # API Keys
@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     GROQ_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
+    OPENROUTER_API_KEY: str = ""
 
     # Ollama settings
     OLLAMA_BASE_URL: str = "http://localhost:11434"
@@ -42,6 +43,52 @@ class Settings(BaseSettings):
 
     # Features
     ENABLE_TOOLS: bool = True
+
+    # RAG Settings
+    VECTOR_STORE_PATH: str = "./qdrant_data"
+    EMBEDDING_PROVIDER: str = "huggingface"
+    EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
+
+    # RAG Ingestion pipeline settings
+    MAX_UPLOAD_SIZE_MB: int = 50
+    ALLOWED_EXTENSIONS: list = ["pdf", "txt", "md"]
+    RAG_CHUNK_SIZE: int = 800
+    RAG_CHUNK_OVERLAP: int = 150
+
+    # Hybrid Search Settings
+    ENABLE_HYBRID_SEARCH: bool = True
+    HYBRID_DENSE_WEIGHT: float = 0.5
+    HYBRID_SPARSE_WEIGHT: float = 0.5
+    ENABLE_RERANKING: bool = True
+
+    # Reranking pipeline settings
+    # RERANK_CANDIDATE_K: candidates fetched before reranking (20–50 recommended)
+    RERANK_CANDIDATE_K: int = 20
+    # RERANK_TOP_K: final chunks passed to the LLM after reranking
+    RERANK_TOP_K: int = 5
+    # RERANK_MODEL: FlashRank cross-encoder model name
+    RERANK_MODEL: str = "ms-marco-TinyBERT-L-2-v2"
+
+    # RAG grounding/citation settings
+    # When enabled, the ContextEngine injects citation rules into the system prompt
+    # and the retrieve_documents tool returns structured 【Doc N】-marked context.
+    RAG_GROUNDING_ENABLED: bool = True
+
+    # ---- Memory / Context Architecture ----
+    # Number of most-recent messages included in each LLM call.
+    # Older messages are covered by the rolling summary instead.
+    RECENT_MESSAGES_WINDOW: int = 20
+
+    # Once the total stored message count exceeds this threshold the oldest
+    # messages are compacted into a rolling summary and removed from state.
+    SUMMARY_THRESHOLD: int = 30
+
+    # Maximum number of Mem0 long-term memory results injected per query.
+    MEM0_MAX_RESULTS: int = 5
+
+    # Rough character budget for the full assembled context sent to the LLM.
+    # Used by ContextEngine to guard against runaway context size.
+    CONTEXT_CHAR_BUDGET: int = 12000
 
 
 settings = Settings()

@@ -840,6 +840,11 @@ body {
   border-color: var(--border-focus);
 }
 
+select.form-control option {
+  background: var(--bg-sidebar);
+  color: var(--text-primary);
+}
+
 .help-text {
   font-size: 0.78rem;
   color: var(--text-muted);

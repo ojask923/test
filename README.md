@@ -28,7 +28,6 @@ Designed for effortless local execution with zero complex dependencies (no exter
   - Code syntax highlighting with copy buttons
   - Chat history session manager synced with database
   - Markdown rendering (tables, bold, lists, code blocks)
-  - Audio voice input & speech synthesis
   - Export chat history as Markdown
 
 ---

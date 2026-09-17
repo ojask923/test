@@ -25,6 +25,12 @@ venv.bak/
 *.sqlite
 *.sqlite3
 chatbot.db
+*-shm
+*-wal
+qdrant_data/
+qdrant_mem0_data/
+.flashrank_cache/
+.qdrant_storage/
 
 # IDE & Editor files
 .idea/

@@ -8,6 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let sessions = JSON.parse(localStorage.getItem('chat_sessions') || '[]');
   let isGenerating = false;
   let abortController = null;
+  let pendingUpload = null;
 
   // Settings State
   const savedProvider = localStorage.getItem('cfg_provider');
@@ -32,7 +33,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const sessionsList = document.getElementById('sessions-list');
   const clearChatBtn = document.getElementById('clear-chat-btn');
   const exportChatBtn = document.getElementById('export-chat-btn');
-  const voiceBtn = document.getElementById('voice-input-btn');
+  const uploadDocLabel = document.getElementById('upload-doc-label');
+  const ragFileInput = document.getElementById('rag-file-input');
+  const attachmentPreview = document.getElementById('attachment-preview');
   const themeToggleBtn = document.getElementById('theme-toggle-btn');
   const themeIcon = document.getElementById('theme-icon');
   const themeText = document.getElementById('theme-text');
@@ -49,26 +52,144 @@ document.addEventListener('DOMContentLoaded', () => {
   const saveSettingsBtn = document.getElementById('save-settings-btn');
   const providerSelect = document.getElementById('provider-select');
   const providerDesc = document.getElementById('provider-desc');
-  const modelInput = document.getElementById('model-input');
+  const modelSelect = document.getElementById('model-select');
+  const customModelGroup = document.getElementById('custom-model-group');
+  const customModelInput = document.getElementById('custom-model-input');
   const tempSlider = document.getElementById('temp-slider');
   const tempVal = document.getElementById('temp-val');
   const systemPromptInput = document.getElementById('system-prompt');
 
-  // Provider Default Model Mapping
+  // Provider Default Model Mapping & Descriptions
   const providerDefaults = {
-    groq: { model: 'openai/gpt-oss-120b', desc: 'Groq ultra-fast GPT-OSS 120B / Qwen 3.8 (configured via GROQ_API_KEY in .env).' },
-    ollama: { model: 'llama3.2', desc: '100% Free local models running via Ollama on your computer.' },
-    openai: { model: 'gpt-4o-mini', desc: 'OpenAI GPT-4o models (requires OPENAI_API_KEY in .env).' },
-    gemini: { model: 'gemini-1.5-flash', desc: 'Google Gemini Flash / Pro (requires GEMINI_API_KEY in .env).' },
-    anthropic: { model: 'claude-3-5-sonnet-20241022', desc: 'Anthropic Claude models (requires ANTHROPIC_API_KEY in .env).' },
+    groq: {
+      desc: 'Groq ultra-fast AI acceleration.',
+      models: [
+        { id: 'openai/gpt-oss-120b', label: 'openai/gpt-oss-120b (Recommended)' },
+        { id: 'qwen/qwen3.8-27b', label: 'qwen/qwen3.8-27b' },
+        { id: 'qwen/qwen3.6-27b', label: 'qwen/qwen3.6-27b' },
+        { id: 'openai/gpt-oss-20b', label: 'openai/gpt-oss-20b' },
+        { id: 'groq/compound', label: 'groq/compound' },
+      ],    },
+    ollama: {
+      desc: '100% Free local models running via Ollama on your computer.',
+      models: [
+        { id: 'llama3.2', label: 'llama3.2 (Default)' },
+        { id: 'deepseek-r1:latest', label: 'deepseek-r1:latest' },
+        { id: 'mistral', label: 'mistral' },
+        { id: 'qwen2.5', label: 'qwen2.5' },
+        { id: 'phi3', label: 'phi3' },
+      ],
+    },
+    openai: {
+      desc: 'OpenAI GPT-4o models (requires OPENAI_API_KEY in .env).',
+      models: [
+        { id: 'gpt-4o-mini', label: 'gpt-4o-mini (Fast & Cost-effective)' },
+        { id: 'gpt-4o', label: 'gpt-4o (High Intelligence)' },
+        { id: 'gpt-3.5-turbo', label: 'gpt-3.5-turbo' },
+      ],
+    },
+    gemini: {
+      desc: 'Google Gemini Flash / Pro (requires GEMINI_API_KEY in .env).',
+      models: [
+        { id: 'gemini-1.5-flash', label: 'gemini-1.5-flash (Fast Default)' },
+        { id: 'gemini-1.5-pro', label: 'gemini-1.5-pro (High Reasoning)' },
+        { id: 'gemini-2.0-flash-exp', label: 'gemini-2.0-flash-exp' },
+      ],
+    },
+    anthropic: {
+      desc: 'Anthropic Claude models (requires ANTHROPIC_API_KEY in .env).',
+      models: [
+        { id: 'claude-3-5-sonnet-20241022', label: 'claude-3-5-sonnet-20241022 (Recommended)' },
+        { id: 'claude-3-5-haiku-20241022', label: 'claude-3-5-haiku-20241022 (Fast)' },
+      ],
+    },
+    openrouter: {
+      desc: 'Unified multi-provider API (requires OPENROUTER_API_KEY in .env).',
+      models: [
+        { id: 'poolside/laguna-s-2.1:free', label: 'poolside/laguna-s-2.1:free' },
+        { id: 'meta-llama/llama-3.3-70b-instruct:free', label: 'meta-llama/llama-3.3-70b-instruct:free' },
+        { id: 'deepseek/deepseek-r1:free', label: 'deepseek/deepseek-r1:free' },
+      ],
+    },
   };
+
+  // Helper to populate model dropdown for a given provider
+  function populateModelOptions(provider, selectedModel) {
+    if (!modelSelect) return;
+    modelSelect.innerHTML = '';
+    const provInfo = providerDefaults[provider] || { models: [] };
+    const modelList = provInfo.models || [];
+
+    let isKnownModel = false;
+    modelList.forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label || m.id;
+      if (selectedModel && selectedModel === m.id) {
+        opt.selected = true;
+        isKnownModel = true;
+      }
+      modelSelect.appendChild(opt);
+    });
+
+    // Option for entering a custom model tag
+    const customOpt = document.createElement('option');
+    customOpt.value = '__custom__';
+    customOpt.textContent = 'Custom model (type manually)...';
+    modelSelect.appendChild(customOpt);
+
+    if (selectedModel && !isKnownModel) {
+      customOpt.selected = true;
+      if (customModelGroup) customModelGroup.style.display = 'flex';
+      if (customModelInput) customModelInput.value = selectedModel;
+    } else {
+      if (!selectedModel && modelList.length > 0) {
+        modelSelect.value = modelList[0].id;
+      }
+      if (customModelGroup) customModelGroup.style.display = 'none';
+      if (customModelInput) customModelInput.value = '';
+    }
+  }
+
+  // Fetch backend /api/models to dynamically sync any server-configured models
+  async function syncServerModels() {
+    try {
+      const res = await fetch('/api/models');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.providers) {
+        for (const [key, val] of Object.entries(data.providers)) {
+          if (!providerDefaults[key]) {
+            providerDefaults[key] = { desc: val.description || '', models: [] };
+          }
+          if (Array.isArray(val.models) && val.models.length > 0) {
+            providerDefaults[key].models = val.models.map((m) => {
+              if (typeof m === 'string') {
+                return { id: m, label: m };
+              }
+              return m;
+            });
+          }
+          if (val.description) {
+            providerDefaults[key].desc = val.description;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Could not sync models from /api/models:', e);
+    }
+  }
 
   // Initialize
   initTheme();
-  updateHeaderPill();
   fetchSessions();
   loadSessionHistory(currentSessionId);
   setupAutoResize();
+
+  // Sync models from server, then refresh the header pill with up-to-date info
+  syncServerModels().then(() => {
+    updateHeaderPill();
+  });
 
   // Event Listeners
   chatForm.addEventListener('submit', (e) => {
@@ -98,6 +219,88 @@ document.addEventListener('DOMContentLoaded', () => {
 
   exportChatBtn.addEventListener('click', exportConversation);
 
+  // Document Upload (RAG)
+  if (uploadDocLabel && ragFileInput && attachmentPreview) {
+    ragFileInput.addEventListener('change', async () => {
+      const file = ragFileInput.files[0];
+      if (!file) return;
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      // Create chip in attachment preview
+      attachmentPreview.style.display = 'flex';
+      attachmentPreview.innerHTML = `
+        <div id="upload-chip" style="display: flex; align-items: center; gap: 8px; background: var(--bg-input); border: 1px solid var(--border-color); padding: 6px 12px; border-radius: var(--radius-sm); font-size: 0.85rem;">
+          <span style="font-size: 1.2rem;">📄</span>
+          <span id="upload-chip-text" style="color: var(--text-primary); font-weight: 500;">${escapeHtml(file.name)} (Uploading...)</span>
+        </div>
+      `;
+
+      const originalHtml = uploadDocLabel.innerHTML;
+      uploadDocLabel.innerHTML = '⏳';
+      uploadDocLabel.style.pointerEvents = 'none';
+
+      welcomeHero.style.display = 'none';
+      pendingUpload = null; // reset
+
+      try {
+        const resp = await fetch('/api/rag/ingest', {
+          method: 'POST',
+          body: formData,
+        });
+
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.detail?.message || data.detail || 'Failed to ingest document');
+        }
+
+        if (data.status === 'duplicate') {
+            document.getElementById('upload-chip-text').textContent = `${escapeHtml(file.name)} (Already ingested)`;
+            document.getElementById('upload-chip').style.borderColor = 'var(--accent-color)';
+            
+            pendingUpload = {
+              name: file.name,
+              chunks: 0,
+              html: `
+                <div style="display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); padding: 10px 14px; border-radius: var(--radius-md); margin-bottom: 12px; width: fit-content;">
+                  <span style="font-size: 1.5rem;">📄</span>
+                  <div>
+                    <div style="font-weight: 600; font-size: 0.9rem;">${escapeHtml(file.name)}</div>
+                    <div style="font-size: 0.75rem; color: var(--text-muted);">Already in knowledge base</div>
+                  </div>
+                </div>
+              `
+            };
+        } else {
+            document.getElementById('upload-chip-text').textContent = `${escapeHtml(file.name)} (${data.chunks_added} chunks ready)`;
+            document.getElementById('upload-chip').style.borderColor = 'var(--accent-color)';
+            
+            pendingUpload = {
+              name: file.name,
+              chunks: data.chunks_added,
+              html: `
+                <div style="display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); padding: 10px 14px; border-radius: var(--radius-md); margin-bottom: 12px; width: fit-content;">
+                  <span style="font-size: 1.5rem;">📄</span>
+                  <div>
+                    <div style="font-weight: 600; font-size: 0.9rem;">${escapeHtml(file.name)}</div>
+                    <div style="font-size: 0.75rem; color: var(--text-muted);">Indexed (${data.chunks_added} chunks)</div>
+                  </div>
+                </div>
+              `
+            };
+        }
+      } catch (err) {
+        document.getElementById('upload-chip-text').textContent = `${escapeHtml(file.name)} (Error: ${escapeHtml(err.message)})`;
+        document.getElementById('upload-chip').style.borderColor = '#ef4444';
+      } finally {
+        uploadDocLabel.innerHTML = originalHtml;
+        uploadDocLabel.style.pointerEvents = 'auto';
+        ragFileInput.value = '';
+      }
+    });
+  }
+
   // Suggestion chips
   document.querySelectorAll('.suggestion-chip').forEach((chip) => {
     chip.addEventListener('click', () => {
@@ -118,8 +321,17 @@ document.addEventListener('DOMContentLoaded', () => {
   providerSelect.addEventListener('change', () => {
     const selected = providerSelect.value;
     if (providerDefaults[selected]) {
-      modelInput.value = providerDefaults[selected].model;
-      providerDesc.textContent = providerDefaults[selected].desc;
+      providerDesc.textContent = providerDefaults[selected].desc || '';
+      populateModelOptions(selected);
+    }
+  });
+
+  modelSelect.addEventListener('change', () => {
+    if (modelSelect.value === '__custom__') {
+      customModelGroup.style.display = 'flex';
+      customModelInput.focus();
+    } else {
+      customModelGroup.style.display = 'none';
     }
   });
 
@@ -129,7 +341,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   saveSettingsBtn.addEventListener('click', () => {
     config.provider = providerSelect.value;
-    config.model = modelInput.value.trim() || providerDefaults[config.provider].model;
+    
+    let chosenModel = modelSelect.value;
+    if (chosenModel === '__custom__') {
+      chosenModel = customModelInput.value.trim();
+    }
+    const defaultModel = providerDefaults[config.provider]?.models?.[0]?.id || 'gpt-4o-mini';
+    config.model = chosenModel || defaultModel;
     config.temperature = parseFloat(tempSlider.value);
     config.systemPrompt = systemPromptInput.value.trim();
 
@@ -152,46 +370,25 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Voice Input (Speech-to-Text)
-  if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    const recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = false;
-
-    voiceBtn.addEventListener('click', () => {
-      recognition.start();
-      voiceBtn.style.color = '#ef4444';
-    });
-
-    recognition.onresult = (e) => {
-      const transcript = e.results[0][0].transcript;
-      userInput.value = transcript;
-      voiceBtn.style.color = '';
-      handleSendMessage();
-    };
-
-    recognition.onerror = () => {
-      voiceBtn.style.color = '';
-    };
-
-    recognition.onend = () => {
-      voiceBtn.style.color = '';
-    };
-  } else {
-    voiceBtn.style.display = 'none';
-  }
-
   // -------------------------------------------------------------
   // Messaging & Streaming Engine
   // -------------------------------------------------------------
   async function handleSendMessage() {
     const text = userInput.value.trim();
-    if (!text || isGenerating) return;
+    if ((!text && !pendingUpload) || isGenerating) return;
 
     // Reset textarea
     userInput.value = '';
     userInput.style.height = 'auto';
+
+    const attachmentHtml = pendingUpload ? pendingUpload.html : '';
+    const uploadedFileName = pendingUpload ? pendingUpload.name : '';
+    if (pendingUpload) {
+      // Clear preview
+      attachmentPreview.innerHTML = '';
+      attachmentPreview.style.display = 'none';
+      pendingUpload = null;
+    }
 
     // Hide welcome hero if visible
     if (welcomeHero && welcomeHero.parentElement) {
@@ -202,7 +399,15 @@ document.addEventListener('DOMContentLoaded', () => {
     ensureSessionExists(text);
 
     // Append User Message to UI
-    appendMessageUI('user', text);
+    appendMessageUI('user', text, attachmentHtml);
+
+    // Prepare for backend
+    let backendMessage = text;
+    if (uploadedFileName) {
+      backendMessage = `[System context: The user has just uploaded a document into the knowledge base named "${uploadedFileName}". If their message is short or ambiguous like "what is this" or "summarize", they are referring to this document. Please use the retrieve_documents tool to look it up.]\n\nUser message: ${text}`;
+    } else if (!text && uploadedFileName) {
+      backendMessage = `[System context: The user uploaded a document named "${uploadedFileName}" without any accompanying message. Please use the retrieve_documents tool to search for it and summarize it for the user.]`;
+    }
 
     // Prepare Assistant Message Placeholder with live cursor
     const { bubbleEl, toolContainerEl, rowEl } = createAssistantMessageUI();
@@ -217,7 +422,7 @@ document.addEventListener('DOMContentLoaded', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: text,
+          message: backendMessage,
           session_id: currentSessionId,
           provider: config.provider,
           model: config.model,
@@ -289,7 +494,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // -------------------------------------------------------------
   // UI Rendering Helpers
   // -------------------------------------------------------------
-  function appendMessageUI(role, content) {
+  function appendMessageUI(role, content, attachmentHtml = '') {
     const row = document.createElement('div');
     row.className = `message-row ${role === 'user' ? 'user-row' : 'bot-row'}`;
 
@@ -304,7 +509,7 @@ document.addEventListener('DOMContentLoaded', () => {
     bubble.className = `message-bubble ${role === 'user' ? 'user-bubble' : 'bot-bubble'}`;
 
     if (role === 'user') {
-      bubble.textContent = content;
+      bubble.innerHTML = attachmentHtml + escapeHtml(content).replace(/\\n/g, '<br>');
     } else {
       bubble.innerHTML = marked.parse(content);
       highlightCodeBlocks(bubble);
@@ -550,7 +755,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // -------------------------------------------------------------
   function openSettings() {
     providerSelect.value = config.provider;
-    modelInput.value = config.model;
+    populateModelOptions(config.provider, config.model);
     tempSlider.value = config.temperature;
     tempVal.textContent = config.temperature;
     systemPromptInput.value = config.systemPrompt;
@@ -563,7 +768,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function updateHeaderPill() {
-    headerProviderName.textContent = providerSelect.options[providerSelect.selectedIndex]?.text.split(' ')[0] || config.provider.toUpperCase();
+    const opt = Array.from(providerSelect.options).find(o => o.value === config.provider);
+    headerProviderName.textContent = opt ? opt.text.split(' ')[0] : config.provider.toUpperCase();
     headerModelName.textContent = config.model;
   }
 

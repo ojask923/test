@@ -10,9 +10,11 @@ from app.config import settings
 from app.agent.graph import agent
 from app.services.database import db_service
 from app.services.memory import memory_service
+from app.api import rag_routes
 
 
 router = APIRouter(prefix="/api")
+router.include_router(rag_routes.router)
 
 
 class ChatRequest(BaseModel):
@@ -30,6 +32,14 @@ class ChatResponse(BaseModel):
     session_id: str
     provider: str
     model: Optional[str] = None
+    citations: Optional[List[dict]] = Field(
+        default=None,
+        description=(
+            "Source citations when the answer draws from retrieved documents. "
+            "Each entry contains: index, filename, page_number, section, chunk_id, "
+            "document_id, rrf_score, rerank_score."
+        ),
+    )
 
 
 class SessionCreateRequest(BaseModel):
@@ -95,7 +105,13 @@ async def chat_endpoint(payload: ChatRequest):
         # Save assistant response to database
         db_service.add_message(payload.session_id, role="assistant", content=res["content"])
 
-        return ChatResponse(**res)
+        return ChatResponse(
+            content=res["content"],
+            session_id=res["session_id"],
+            provider=res["provider"],
+            model=res.get("model"),
+            citations=res.get("citations") or None,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -103,8 +119,11 @@ async def chat_endpoint(payload: ChatRequest):
 @router.post("/chat/stream")
 async def chat_stream_endpoint(payload: ChatRequest):
     """Server-Sent Events (SSE) streaming endpoint with database persistence."""
-    # Record user message in DB
-    db_service.add_message(payload.session_id, role="user", content=payload.message)
+    # Record user message in DB safely
+    try:
+        db_service.add_message(payload.session_id, role="user", content=payload.message)
+    except Exception as e:
+        print(f"[WARNING] Failed to record user message in database: {e}")
 
     async def event_generator():
         accumulated_response = ""
@@ -126,14 +145,17 @@ async def chat_stream_endpoint(payload: ChatRequest):
 
                 yield f"data: {json.dumps(event)}\n\n"
 
-            # Save full assistant response to database on completion
+            # Save full assistant response to database on completion safely
             if accumulated_response:
-                db_service.add_message(
-                    payload.session_id,
-                    role="assistant",
-                    content=accumulated_response,
-                    tool_name=last_tool,
-                )
+                try:
+                    db_service.add_message(
+                        payload.session_id,
+                        role="assistant",
+                        content=accumulated_response,
+                        tool_name=last_tool,
+                    )
+                except Exception as e:
+                    print(f"[WARNING] Failed to record assistant response in database: {e}")
 
         except Exception as e:
             err_data = {"type": "error", "content": str(e)}
@@ -158,8 +180,8 @@ async def get_user_memories(user_id: str):
 
 
 @router.delete("/memories/{user_id}/{memory_id}")
-async def delete_user_memory(user_id: str, memory_id: int):
-    """Delete a specific long-term memory fact."""
+async def delete_user_memory(user_id: str, memory_id: str):
+    """Delete a specific long-term memory fact (accepts UUID strings and integer IDs)."""
     success = await memory_service.delete(user_id, memory_id)
     return {"status": "deleted" if success else "not_found", "memory_id": memory_id}
 
@@ -180,8 +202,8 @@ async def get_models():
         "providers": {
             "groq": {
                 "name": "Groq (Ultra-Fast)",
-                "description": "GPT-OSS 120B / Qwen 3.8 / 3.6 / GPT-OSS 20B",
-                "models": ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "qwen/qwen3.6-27b", "openai/gpt-oss-20b"],
+                "description": "GPT-OSS 120B / Qwen 3.8 / 3.6 / GPT-OSS 20B / Compound",
+                "models": ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "qwen/qwen3.6-27b", "openai/gpt-oss-20b", "groq/compound"],
                 "requires_key": True,
                 "is_configured": bool(settings.GROQ_API_KEY),
             },
@@ -213,6 +235,13 @@ async def get_models():
                 "models": ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"],
                 "requires_key": True,
                 "is_configured": bool(settings.ANTHROPIC_API_KEY),
+            },
+            "openrouter": {
+                "name": "OpenRouter",
+                "description": "Unified API for multiple LLM providers",
+                "models": ["poolside/laguna-s-2.1:free", "meta-llama/llama-3.3-70b-instruct:free", "deepseek/deepseek-r1:free"],
+                "requires_key": True,
+                "is_configured": bool(settings.OPENROUTER_API_KEY),
             },
         },
     }
@@ -247,12 +276,74 @@ async def clear_session_history(session_id: str):
 
 @router.get("/health")
 async def health_check():
-    """Health check endpoint checking API and database connectivity."""
+    """Health check endpoint — reports the active backend for every infrastructure layer."""
+    from app.agent.graph import agent
+    from app.config import settings as s
+
     db_healthy = db_service.health_check()
+    db_url = s.DATABASE_URL
+
+    # Determine relational DB backend label
+    if db_url.startswith(("postgresql", "postgres")):
+        db_backend = "postgresql"
+    else:
+        db_backend = "sqlite"
+
+    # Determine LangGraph checkpointer backend
+    if agent._checkpointer_ready and agent.checkpointer is not None:
+        checkpointer_type = type(agent.checkpointer).__name__   # "AsyncPostgresSaver" or "MemorySaver"
+        checkpointer_persistent = "PostgresSaver" in checkpointer_type
+        checkpointer_error = agent._checkpointer_error  # None on success, error string on fallback
+    else:
+        checkpointer_type = "not yet initialised (lazy — fires on first chat)"
+        checkpointer_persistent = None
+        checkpointer_error = None
+
+    # Determine vector store backend
+    vector_store_path = s.VECTOR_STORE_PATH
+    vector_backend = "qdrant-local" if vector_store_path else "qdrant-memory"
+
+    # Determine long-term memory (mem0) backend
+    from app.services.memory import memory_service
+    if memory_service._initialized:
+        memory_backend = "mem0+qdrant" if memory_service._use_mem0 else "db-keyword-fallback"
+    else:
+        memory_backend = "not yet initialised (lazy — fires on first chat)"
+
     return {
         "status": "healthy" if db_healthy else "degraded",
-        "app": settings.APP_NAME,
-        "version": settings.VERSION,
-        "database": "healthy" if db_healthy else "unhealthy",
-        "tools_enabled": settings.ENABLE_TOOLS,
+        "app": s.APP_NAME,
+        "version": s.VERSION,
+        "infrastructure": {
+            "relational_db": {
+                "backend": db_backend,
+                "url": db_url.split("@")[-1] if "@" in db_url else db_url,   # strip credentials
+                "status": "healthy" if db_healthy else "unhealthy",
+                "stores": ["sessions", "messages", "rag_document_index", "user_memories_fallback"],
+            },
+            "checkpointer": {
+                "backend": checkpointer_type,
+                "persistent_across_restarts": checkpointer_persistent,
+                "init_error": checkpointer_error,
+                "note": "PostgresSaver writes to relational_db; MemorySaver is in-process RAM only",
+            },
+            "vector_store": {
+                "backend": vector_backend,
+                "path": vector_store_path,
+                "embedding_model": s.EMBEDDING_MODEL,
+                "stores": ["rag_document_chunks"],
+            },
+            "long_term_memory": {
+                "backend": memory_backend,
+                "vector_collection": "user_memories_hf",
+                "note": "mem0 extracts facts via LLM and stores embeddings in a separate Qdrant collection",
+            },
+        },
+        "features": {
+            "tools_enabled": s.ENABLE_TOOLS,
+            "rag_enabled": True,
+            "long_term_memory_enabled": True,
+            "streaming": True,
+        },
     }
+

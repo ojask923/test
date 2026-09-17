@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from app.config import settings
 from app.api.routes import router as api_router
 from app.services.database import db_service
+from app.services.rag_service import IngestedDocument  # noqa: F401 — ensures table is registered at startup
 
 
 @asynccontextmanager
