@@ -511,7 +511,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (role === 'user') {
       bubble.innerHTML = attachmentHtml + escapeHtml(content).replace(/\\n/g, '<br>');
     } else {
-      bubble.innerHTML = marked.parse(content);
+      bubble.innerHTML = DOMPurify.sanitize(marked.parse(content));
       highlightCodeBlocks(bubble);
     }
 
@@ -562,7 +562,7 @@ document.addEventListener('DOMContentLoaded', () => {
       bubbleEl.innerHTML = '<span class="typing-cursor"></span>';
       return;
     }
-    const html = marked.parse(text);
+    const html = DOMPurify.sanitize(marked.parse(text));
     bubbleEl.innerHTML = html + (isTyping ? '<span class="typing-cursor"></span>' : '');
   }
 
