@@ -1,7 +1,7 @@
 """Chat session database model using SQLModel."""
 
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import List
 from sqlmodel import SQLModel, Field, Relationship
 
 

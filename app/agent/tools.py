@@ -6,7 +6,10 @@ import asyncio
 import operator
 import datetime
 from langchain_core.tools import tool
+from langchain_core.messages import ToolMessage
 from langgraph.prebuilt import InjectedState
+from langgraph.prebuilt.tool_node import ToolRuntime
+from langgraph.types import Command
 from langchain_core.runnables import RunnableConfig
 from typing import Annotated
 
@@ -103,14 +106,18 @@ def search_web(query: str) -> str:
 async def retrieve_documents(
     query: str,
     state: Annotated[dict, InjectedState],
-    config: RunnableConfig
-) -> str:
+    config: RunnableConfig,
+    runtime: ToolRuntime,
+) -> Command:
     """Retrieve relevant document snippets from the vector store based on a query.
 
     Returns a 【Doc N】-marked context block with source attribution. Citation
-    metadata is stored in the agent state under ``rag_citations`` for inclusion
-    in the API response.
+    metadata is written into ``rag_citations`` in AgentState via a
+    ``Command(update=...)`` so it is properly persisted by LangGraph and
+    available to the API layer in the response.
     """
+    tool_call_id = runtime.tool_call_id
+
     try:
         configurable = config.get("configurable", {})
         provider = configurable.get("provider", "openai")
@@ -133,20 +140,40 @@ async def retrieve_documents(
         )
 
         if not chunks:
-            return "No relevant documents found in the vector store."
+            return Command(update={
+                "rag_citations": {},
+                "messages": [ToolMessage(
+                    content="No relevant documents found in the vector store.",
+                    tool_call_id=tool_call_id,
+                )],
+            })
 
         context_block, citation_map = format_cited_context(chunks)
 
-        # Persist citation_map into AgentState so the API layer can include it
-        # in the response JSON. The InjectedState dict is mutable.
-        try:
-            state["rag_citations"] = citation_map
-        except (TypeError, KeyError):
-            pass  # State update not supported in this context; citations won't be in response
-
-        return context_block
+        # Return a Command so LangGraph writes citation_map into the real
+        # persisted AgentState.  InjectedState is a read-only snapshot and
+        # direct mutation of it is silently ignored by the graph runtime.
+        # ToolNode requires a ToolMessage with the matching tool_call_id to be
+        # present in Command.update["messages"] — it carries the context block
+        # that the LLM sees, while rag_citations is persisted in state.
+        return Command(update={
+            "rag_citations": citation_map,
+            "messages": [ToolMessage(
+                content=context_block,
+                tool_call_id=tool_call_id,
+            )],
+        })
     except Exception as e:
-        return f"Error retrieving documents: {str(e)}. DO NOT retry document retrieval, answer using existing knowledge or context."
+        return Command(update={
+            "rag_citations": {},
+            "messages": [ToolMessage(
+                content=(
+                    f"Error retrieving documents: {str(e)}. "
+                    "DO NOT retry document retrieval, answer using existing knowledge or context."
+                ),
+                tool_call_id=tool_call_id,
+            )],
+        })
 
 
 def get_available_tools():

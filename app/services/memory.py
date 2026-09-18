@@ -15,7 +15,6 @@ The local UserMemory DB table is kept for display/management only
 (GET /memories, DELETE /memories).  It is NOT mixed into retrieval.
 """
 
-import os
 import asyncio
 from typing import Optional, List, Dict, Any, Set
 from concurrent.futures import ThreadPoolExecutor

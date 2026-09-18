@@ -34,15 +34,9 @@ def test_structure_detection_and_chunking():
     # Should produce exactly 3 chunks (one per section)
     assert len(chunks) == 3, f"Expected 3 chunks, got {len(chunks)}"
     
-    # Verify breadcrumbs
-    assert chunks[0].page_content.startswith("[Section 4.1 — test.md, p.1]\n")
-    assert chunks[1].page_content.startswith("[Section 4.2 — test.md, p.1]\n")
-    assert chunks[2].page_content.startswith("[Section 4.3 — test.md, p.1]\n")
-    
-    # Assert no cross-section content
-    c0 = chunks[0].page_content[chunks[0].page_content.index("\n")+1:]
-    c1 = chunks[1].page_content[chunks[1].page_content.index("\n")+1:]
-    c2 = chunks[2].page_content[chunks[2].page_content.index("\n")+1:]
+    c0 = chunks[0].page_content
+    c1 = chunks[1].page_content
+    c2 = chunks[2].page_content
     
     assert "4.2" not in c0
     assert "4.1" not in c1

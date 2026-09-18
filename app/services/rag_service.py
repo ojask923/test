@@ -31,7 +31,7 @@ import re
 import time
 import unicodedata
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -46,6 +46,7 @@ from qdrant_client.models import (
     Distance, Filter, FieldCondition, MatchValue, 
     VectorParams, SparseVectorParams, SparseIndexParams, SparseVector
 )
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, Session, SQLModel, select
 from flashrank import Ranker, RerankRequest
 
@@ -152,14 +153,27 @@ class IngestedDocument(SQLModel, table=True):
     """Tracks every file ingested into the RAG vector store.
 
     Used for deduplication, lifecycle management, and admin listing.
+
+    Deduplication is scoped per-user: the composite unique constraint on
+    (user_id, file_hash) allows two different users to ingest the same
+    file content independently.  document_id is a stable UUID generated
+    per ingestion and is unique globally (no two rows share a document_id).
     """
+
+    __table_args__ = (
+        # Dedup key: same file content uploaded by the same user counts as a
+        # duplicate; byte-identical files from different users are independent.
+        UniqueConstraint("user_id", "file_hash", name="uq_ingesteddocument_user_file_hash"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
 
-    # Stable external identifier (UUID4 hex, generated at ingest time)
+    # Stable external identifier (UUID4 hex, generated at ingest time).
+    # Globally unique — no unique=True needed on the SA column because the
+    # primary-key auto-increment already guarantees row uniqueness and
+    # the UUID itself is random enough; an index is sufficient.
     document_id: str = Field(
         index=True,
-        sa_column_kwargs={"unique": True},
         description="Stable UUID for this document",
     )
 
@@ -170,9 +184,10 @@ class IngestedDocument(SQLModel, table=True):
     # File identity
     filename: str = Field(index=True, description="Original filename")
     document_type: str = Field(default="txt", description="File extension / type (pdf, txt, md)")
+    # Not unique by itself — the composite (user_id, file_hash) constraint
+    # above handles dedup; different users may share the same hash.
     file_hash: str = Field(
         index=True,
-        sa_column_kwargs={"unique": True},
         description="SHA-256 hash of raw file content",
     )
 
@@ -610,16 +625,7 @@ class RAGService:
             chunk.metadata["chunk_index"] = idx
             chunk.metadata["total_chunks"] = total
             
-            section = chunk.metadata.get("section")
-            filename = chunk.metadata.get("filename", "Unknown")
-            page_num = chunk.metadata.get("page_number")
-            
-            if section:
-                breadcrumb = f"[Section {section} — {filename}"
-                if page_num:
-                    breadcrumb += f", p.{page_num}"
-                breadcrumb += "]\n"
-                chunk.page_content = breadcrumb + chunk.page_content
+
             
             doc_chunk_counters[doc_id] = idx + 1
 
@@ -638,15 +644,22 @@ class RAGService:
                 sha256.update(block)
         return sha256.hexdigest()
 
-    def _find_existing(self, file_hash: str) -> Optional[IngestedDocument]:
-        """Return the IngestedDocument matching this hash, or None."""
+    def _find_existing(self, file_hash: str, user_id: str) -> Optional[IngestedDocument]:
+        """Return the IngestedDocument matching (user_id, file_hash), or None.
+
+        Deduplication is intentionally scoped to the uploading user: two
+        different users uploading byte-identical files receive independent
+        ingestion records and their own Qdrant vectors tagged with their
+        user_id, so per-user RAG queries return results for both.
+        """
         from app.services.database import db_service
 
         try:
             with Session(db_service.engine) as db:
                 return db.exec(
                     select(IngestedDocument).where(
-                        IngestedDocument.file_hash == file_hash
+                        IngestedDocument.file_hash == file_hash,
+                        IngestedDocument.user_id == user_id,
                     )
                 ).first()
         except Exception:
@@ -799,7 +812,7 @@ class RAGService:
 
         # ── Deduplication check ──────────────────────────────────────────
         file_hash = self._compute_file_hash(file_path)
-        existing = self._find_existing(file_hash)
+        existing = self._find_existing(file_hash, user_id)
 
         if existing and not force:
             return {
@@ -941,155 +954,6 @@ class RAGService:
             "session_id": session_id,
         }
 
-    def retrieve(self, query: str, top_k: int = 3, user_id: Optional[str] = None) -> str:
-        """Retrieve relevant chunks for a query and return a formatted context string.
-
-        Implements Hybrid Search (Semantic + BM25 keyword), Reciprocal Rank Fusion (RRF),
-        Deduplication, and Cross-Encoder Reranking.
-        """
-        # Ensure client and vector store are initialized
-        if self._client is None:
-            _ = self.vector_store
-
-        is_hybrid = getattr(settings, "ENABLE_HYBRID_SEARCH", False)
-        is_reranking = getattr(settings, "ENABLE_RERANKING", False)
-        
-        dense_weight = getattr(settings, "HYBRID_DENSE_WEIGHT", 0.5)
-        sparse_weight = getattr(settings, "HYBRID_SPARSE_WEIGHT", 0.5)
-        
-        # We fetch more candidates before reranking
-        fetch_k = top_k * 3 if is_reranking or is_hybrid else top_k
-
-        # 1. Build Query Filter
-        query_filter = None
-        if user_id:
-            query_filter = Filter(
-                must=[FieldCondition(key="metadata.user_id", match=MatchValue(value=user_id))]
-            )
-
-        # 2. Execute Searches
-        dense_hits = []
-        sparse_hits = []
-        
-        try:
-            dense_vec = self.embeddings.embed_query(query)
-            dense_hits = self._client.query_points(
-                collection_name="chatbot_documents",
-                query=dense_vec,
-                using="",
-                query_filter=query_filter,
-                limit=fetch_k,
-                with_payload=True
-            ).points
-        except Exception as e:
-            logger.warning(f"Dense search failed: {e}")
-
-        if is_hybrid and self.sparse_embeddings:
-            try:
-                # Use embed_query for single string
-                sparse_vec_obj = self.sparse_embeddings.embed_query(query)
-                sparse_hits = self._client.query_points(
-                    collection_name="chatbot_documents",
-                    query=SparseVector(
-                        indices=sparse_vec_obj.indices, 
-                        values=sparse_vec_obj.values
-                    ),
-                    using="langchain-sparse",
-                    query_filter=query_filter,
-                    limit=fetch_k,
-                    with_payload=True
-                ).points
-            except Exception as e:
-                logger.warning(f"Sparse search failed: {e}")
-
-        # 3. Candidate Fusion (Reciprocal Rank Fusion)
-        # RRF Score = weight * (1 / (rank + 60))
-        fused_candidates = {}  # doc_id (payload chunk id) -> payload
-
-        def apply_rrf(hits, weight):
-            for rank, hit in enumerate(hits):
-                # We use the UUID of the Qdrant point as a unique identifier for the chunk
-                point_id = str(hit.id)
-                score = weight * (1.0 / (rank + 60))
-                if point_id not in fused_candidates:
-                    fused_candidates[point_id] = {
-                        "payload": hit.payload,
-                        "score": 0.0,
-                        "point_id": point_id
-                    }
-                fused_candidates[point_id]["score"] += score
-
-        if is_hybrid:
-            apply_rrf(dense_hits, dense_weight)
-            apply_rrf(sparse_hits, sparse_weight)
-        else:
-            # Fallback to standard scores if not hybrid
-            for hit in dense_hits:
-                fused_candidates[str(hit.id)] = {
-                    "payload": hit.payload,
-                    "score": hit.score,
-                    "point_id": str(hit.id)
-                }
-
-        # Sort fused candidates by their combined score
-        sorted_candidates = sorted(fused_candidates.values(), key=lambda x: x["score"], reverse=True)
-        
-        logger.info(f"[Retrieval Diagnostics] Dense Hits: {len(dense_hits)} | Sparse Hits: {len(sparse_hits)} | Fused Unique: {len(sorted_candidates)}")
-
-        # 4. Reranking
-        final_candidates = sorted_candidates[:top_k]
-        if is_reranking and self.reranker and sorted_candidates:
-            passages = []
-            for item in sorted_candidates:
-                payload = item["payload"]
-                text = payload.get("page_content", "")
-                meta = payload.get("metadata", {})
-                passages.append({
-                    "id": item["point_id"],
-                    "text": text,
-                    "meta": meta
-                })
-            
-            try:
-                rerankrequest = RerankRequest(query=query, passages=passages)
-                reranked_results = self.reranker.rerank(rerankrequest)
-                
-                # Take top_k from reranked
-                final_candidates = []
-                for result in reranked_results[:top_k]:
-                    final_candidates.append({
-                        "payload": {"page_content": result["text"], "metadata": result["meta"]},
-                        "score": result["score"]
-                    })
-                logger.info(f"[Retrieval Diagnostics] Reranking successful, final scores: {[round(c['score'], 3) for c in final_candidates]}")
-            except Exception as e:
-                logger.warning(f"Reranking failed: {e}. Falling back to RRF ordering.")
-                final_candidates = sorted_candidates[:top_k]
-
-        if not final_candidates:
-            return "No relevant documents found."
-
-        # 5. Format Final Chunks
-        parts = []
-        for i, item in enumerate(final_candidates, 1):
-            m = item["payload"].get("metadata", {})
-            filename = m.get("filename") or m.get("source", "Unknown")
-            page = m.get("page_number")
-            section = m.get("section")
-            content = item["payload"].get("page_content", "")
-
-            source_parts = [filename]
-            if page:
-                source_parts.append(f"p.{page}")
-            if section:
-                source_parts.append(f"§ {section}")
-            source_label = " | ".join(source_parts)
-
-            parts.append(
-                f"--- Source {i}: {source_label} ---\n{content}"
-            )
-
-        return "\n\n".join(parts)
 
     def retrieve_structured(
         self,

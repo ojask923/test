@@ -7,8 +7,8 @@ Combines:
   4. Windowed recent messages (last N from MessagesState)
   5. Current user query
 
-Applies a configurable character budget so context never grows unbounded.
-No external tokenizer dependency — uses a fast character-count heuristic.
+Applies a configurable token budget so context never grows unbounded.
+Uses tiktoken for accurate token counting against provider limits.
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ from typing import Dict, List, Optional, Sequence
 
 from langchain_core.messages import (
     BaseMessage,
-    HumanMessage,
     SystemMessage,
 )
+import tiktoken
 
 from app.config import settings
 
@@ -32,46 +32,54 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _estimate_chars(messages: List[BaseMessage]) -> int:
-    """Fast character-count estimate for a list of messages."""
+# Initialize tokenizer once for the module
+_tokenizer = tiktoken.get_encoding("cl100k_base")
+
+
+def _count_tokens(messages: List[BaseMessage]) -> int:
+    """Accurate token-count estimate for a list of messages."""
     total = 0
     for m in messages:
         content = m.content
+        text_to_encode = ""
         if isinstance(content, str):
-            total += len(content)
+            text_to_encode = content
         elif isinstance(content, list):
             for part in content:
                 if isinstance(part, dict):
-                    total += len(str(part.get("text", "")))
+                    text_to_encode += str(part.get("text", ""))
+        
+        if text_to_encode:
+            total += len(_tokenizer.encode(text_to_encode))
     return total
 
 
 def _trim_to_budget(
     messages: List[BaseMessage],
-    budget_chars: int,
+    budget_tokens: int,
     keep_first: int = 1,
 ) -> List[BaseMessage]:
-    """Drop the oldest *middle* messages until the total fits within budget_chars.
+    """Drop the oldest *middle* messages until the total fits within budget_tokens.
 
     The first *keep_first* messages (e.g. SystemMessage) and the very last
     message (current query) are always preserved.
     """
-    if _estimate_chars(messages) <= budget_chars:
+    if _count_tokens(messages) <= budget_tokens:
         return messages
 
     protected_head = messages[:keep_first]
     protected_tail = messages[-1:]
     middle = list(messages[keep_first:-1])
 
-    while middle and _estimate_chars(protected_head + middle + protected_tail) > budget_chars:
+    while middle and _count_tokens(protected_head + middle + protected_tail) > budget_tokens:
         middle.pop(0)  # drop the oldest middle message first
 
     trimmed = protected_head + middle + protected_tail
     logger.debug(
-        "[ContextEngine] Context trimmed: %d -> %d messages to fit %d-char budget",
+        "[ContextEngine] Context trimmed: %d -> %d messages to fit %d-token budget",
         len(messages),
         len(trimmed),
-        budget_chars,
+        budget_tokens,
     )
     return trimmed
 
@@ -174,18 +182,18 @@ class ContextEngine:
         # --- 4. Assemble the final list ------------------------------------
         final_messages: List[BaseMessage] = [system_msg] + windowed
 
-        # --- 5. Enforce the character budget --------------------------------
+        # --- 5. Enforce the token budget ------------------------------------
         final_messages = _trim_to_budget(
             final_messages,
-            budget_chars=settings.CONTEXT_CHAR_BUDGET,
+            budget_tokens=settings.CONTEXT_TOKEN_BUDGET,
             keep_first=1,  # always preserve the SystemMessage
         )
 
         logger.debug(
-            "[ContextEngine] Context built: system=%d chars | recent=%d msgs | total=%d chars",
-            len(system_content),
+            "[ContextEngine] Context built: system=%d tokens | recent=%d msgs | total=%d tokens",
+            len(_tokenizer.encode(system_content)),
             len(windowed),
-            _estimate_chars(final_messages),
+            _count_tokens(final_messages),
         )
 
         return final_messages

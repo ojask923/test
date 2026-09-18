@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 from datetime import datetime, timezone
-from sqlmodel import SQLModel, Session, create_engine, select
+from sqlmodel import Session, create_engine, select
 from sqlalchemy import event
 from sqlalchemy.pool import QueuePool
 
@@ -44,7 +44,7 @@ class DatabaseService:
                     pool_pre_ping=True,
                     echo=False,
                 )
-                with self.engine.connect() as conn:
+                with self.engine.connect():
                     pass
             except Exception as e:
                 print(f"[WARNING] Could not connect to configured DATABASE_URL ({e}). Falling back to SQLite.")
@@ -64,9 +64,7 @@ class DatabaseService:
                     cursor.execute("PRAGMA synchronous=NORMAL")
                     cursor.close()
 
-    def initialize(self):
-        """Create database tables if they do not exist."""
-        SQLModel.metadata.create_all(self.engine)
+
 
     def create_session(self, session_id: str, title: str = "New Chat") -> ChatSession:
         """Create and store a new chat session."""

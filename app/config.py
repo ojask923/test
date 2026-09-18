@@ -1,6 +1,6 @@
 import os
 from typing import Literal
-from dotenv import load_dotenv, find_dotenv
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_FILE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
@@ -86,9 +86,9 @@ class Settings(BaseSettings):
     # Maximum number of Mem0 long-term memory results injected per query.
     MEM0_MAX_RESULTS: int = 5
 
-    # Rough character budget for the full assembled context sent to the LLM.
+    # Rough token budget for the full assembled context sent to the LLM.
     # Used by ContextEngine to guard against runaway context size.
-    CONTEXT_CHAR_BUDGET: int = 12000
+    CONTEXT_TOKEN_BUDGET: int = 4000
 
 
 settings = Settings()

@@ -120,9 +120,9 @@ class ConversationSummarizer:
         # Call LLM for summarization
         new_summary = existing_summary  # fallback to old if call fails
         try:
-            from app.agent.graph import get_llm  # local import avoids circular dep
+            from app.services.llm_factory import get_llm
 
-            summary_llm = get_llm(provider=provider, model=model, temperature=0.3, bind_tools=False)
+            summary_llm = get_llm(provider=provider, model=model, temperature=0.3)
             summary_input = [
                 SystemMessage(content=_SUMMARY_SYSTEM_PROMPT),
                 HumanMessage(content=transcript_text),

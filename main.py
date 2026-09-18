@@ -9,19 +9,13 @@ from fastapi.responses import FileResponse
 
 from app.config import settings
 from app.api.routes import router as api_router
-from app.services.database import db_service
-from app.services.rag_service import IngestedDocument  # noqa: F401 — ensures table is registered at startup
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
-    # Initialize database tables
-    try:
-        db_service.initialize()
-        print("[INFO] Database initialized successfully!")
-    except Exception as e:
-        print(f"[WARNING] Database initialization error: {e}")
+    # Database schema is now managed by Alembic migrations,
+    # so we no longer run SQLModel.metadata.create_all() here.
     yield
 
 

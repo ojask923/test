@@ -13,8 +13,6 @@ Memory architecture
   read gate) — not outside in get_response/stream_response.
 """
 
-import os
-import json
 import asyncio
 import logging
 from typing import AsyncGenerator, Dict, Any, List, Optional, Annotated
@@ -23,8 +21,6 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
     AIMessage,
-    SystemMessage,
-    ToolMessage,
 )
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END

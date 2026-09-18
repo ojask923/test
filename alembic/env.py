@@ -18,6 +18,7 @@ from sqlmodel import SQLModel
 from app.config import settings
 from app.models import ChatSession, ChatMessage
 from app.services.memory import UserMemory
+from app.services.rag_service import IngestedDocument
 
 target_metadata = SQLModel.metadata
 

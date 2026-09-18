@@ -1,5 +1,6 @@
 """FastAPI API routes for the simple chatbot with database persistence."""
 
+import asyncio
 import json
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException
@@ -50,7 +51,7 @@ class SessionCreateRequest(BaseModel):
 @router.get("/sessions")
 async def get_sessions():
     """Retrieve all chat sessions from the database."""
-    sessions = db_service.get_all_sessions()
+    sessions = await asyncio.to_thread(db_service.get_all_sessions)
     return [
         {
             "id": s.id,
@@ -67,7 +68,7 @@ async def create_session(payload: SessionCreateRequest):
     """Create a new chat session in the database."""
     import uuid
     session_id = payload.id or f"sess_{uuid.uuid4().hex[:8]}"
-    chat_session = db_service.create_session(session_id=session_id, title=payload.title or "New Chat")
+    chat_session = await asyncio.to_thread(db_service.create_session, session_id=session_id, title=payload.title or "New Chat")
     return {
         "id": chat_session.id,
         "title": chat_session.title,
@@ -78,7 +79,7 @@ async def create_session(payload: SessionCreateRequest):
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
     """Delete a chat session and its messages from the database."""
-    success = db_service.delete_session(session_id)
+    success = await asyncio.to_thread(db_service.delete_session, session_id)
     agent.clear_history(session_id)
     if not success:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -90,7 +91,7 @@ async def chat_endpoint(payload: ChatRequest):
     """Non-streaming chat endpoint with database persistence."""
     try:
         # Save user message to database
-        db_service.add_message(payload.session_id, role="user", content=payload.message)
+        await asyncio.to_thread(db_service.add_message, payload.session_id, role="user", content=payload.message)
 
         res = await agent.get_response(
             message=payload.message,
@@ -103,7 +104,7 @@ async def chat_endpoint(payload: ChatRequest):
         )
 
         # Save assistant response to database
-        db_service.add_message(payload.session_id, role="assistant", content=res["content"])
+        await asyncio.to_thread(db_service.add_message, payload.session_id, role="assistant", content=res["content"])
 
         return ChatResponse(
             content=res["content"],
@@ -121,7 +122,7 @@ async def chat_stream_endpoint(payload: ChatRequest):
     """Server-Sent Events (SSE) streaming endpoint with database persistence."""
     # Record user message in DB safely
     try:
-        db_service.add_message(payload.session_id, role="user", content=payload.message)
+        await asyncio.to_thread(db_service.add_message, payload.session_id, role="user", content=payload.message)
     except Exception as e:
         print(f"[WARNING] Failed to record user message in database: {e}")
 
@@ -148,7 +149,8 @@ async def chat_stream_endpoint(payload: ChatRequest):
             # Save full assistant response to database on completion safely
             if accumulated_response:
                 try:
-                    db_service.add_message(
+                    await asyncio.to_thread(
+                        db_service.add_message,
                         payload.session_id,
                         role="assistant",
                         content=accumulated_response,
@@ -250,7 +252,7 @@ async def get_models():
 @router.get("/history/{session_id}")
 async def get_session_history(session_id: str):
     """Get conversation history from the database for a session."""
-    messages = db_service.get_session_messages(session_id)
+    messages = await asyncio.to_thread(db_service.get_session_messages, session_id)
     return {
         "session_id": session_id,
         "messages": [
@@ -269,7 +271,7 @@ async def get_session_history(session_id: str):
 @router.delete("/history/{session_id}")
 async def clear_session_history(session_id: str):
     """Clear message history in the database for a session."""
-    db_service.clear_session_messages(session_id)
+    await asyncio.to_thread(db_service.clear_session_messages, session_id)
     agent.clear_history(session_id)
     return {"status": "cleared", "session_id": session_id}
 
@@ -280,7 +282,7 @@ async def health_check():
     from app.agent.graph import agent
     from app.config import settings as s
 
-    db_healthy = db_service.health_check()
+    db_healthy = await asyncio.to_thread(db_service.health_check)
     db_url = s.DATABASE_URL
 
     # Determine relational DB backend label
